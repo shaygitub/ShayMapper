@@ -1,0 +1,10 @@
+﻿  helpers.cpp
+  ioctl.cpp
+  PE.cpp
+  persistence.cpp
+  ShayMapper.cpp
+  unsigned_load.cpp
+  utils.cpp
+  vulndriver.cpp
+persistence.obj : error LNK2001: unresolved external symbol NtQuerySystemInformation
+H:\current\ShayMapper\x64\Release\ShayMapper.exe : fatal error LNK1120: 1 unresolved externals
