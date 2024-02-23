@@ -49,9 +49,10 @@ int main(int argc, char* argv[]){
 
 	// Load vulnurable driver into memory:
 	Status = VulnurableDriver::LoadVulnurableDriver(&IntelDriver.DriverHandle, IntelDriver.StraightDriverName, IntelDriver.DriverSymbolicLink,
-		IntelDriver.DriverServiceName, (const BYTE*)IntelDriver.DriverDataPointer, IntelDriver.DriverTimestamp, &KernelBaseAddress);
+		IntelDriver.DriverServiceName, (const BYTE*)IntelDriver.DriverDataPointer, IntelDriver.DriverTimestamp, &KernelBaseAddress, sizeof(KdmDriverData));
 	if (Status != STATUS_SUCCESS || IntelDriver.DriverHandle == INVALID_HANDLE_VALUE) {
 		printf("[-] Loading vulnurable driver procedure of kdmapper vulnurable driver (iqvw64.sys) failed with status 0x%x\n", Status);
+		DeleteFile(IntelDriver.StraightDriverName);
 		return 0;
 	}
 
@@ -64,6 +65,7 @@ int main(int argc, char* argv[]){
 		if (UnsignedData != NULL) {
 			free(UnsignedData);
 		}
+		DeleteFile(IntelDriver.StraightDriverName);
 		return 0;
 	}
 
@@ -75,6 +77,7 @@ int main(int argc, char* argv[]){
 		if (UnsignedData != NULL) {
 			free(UnsignedData);
 		}
+		DeleteFile(IntelDriver.StraightDriverName);
 		return 0;
 	}
 	printf("[+] Loaded unsigned driver %s successfully, returned status = 0x%x\n", argv[1], Status);
@@ -86,10 +89,12 @@ int main(int argc, char* argv[]){
 		if (UnsignedData != NULL) {
 			free(UnsignedData);
 		}
+		DeleteFile(IntelDriver.StraightDriverName);
 		return 0;
 	}
 	if (UnsignedData != NULL) {
 		free(UnsignedData);
 	}
+	DeleteFile(IntelDriver.StraightDriverName);
 	return 1;
 }

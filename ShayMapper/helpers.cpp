@@ -18,7 +18,7 @@ PVOID VulnurableDriver::HelperFunctions::FindSectionFromKernelModule(HANDLE* Dev
 	BYTE ModuleHeaders[0x1000] = { 0 };
 	PVOID ModuleSection = NULL;
 	ULONG TemporarySize = 0;
-	if (!VulnurableDriver::IoctlFunctions::MemoryRead(DeviceHandle, ModulePointer, ModuleHeaders, 0x1000)) {
+	if (ModulePointer == NULL || !VulnurableDriver::IoctlFunctions::MemoryRead(DeviceHandle, ModulePointer, ModuleHeaders, 0x1000)) {
 		printf("[-] Cannot read header data of kernel module\n");
 		return NULL;
 	}
@@ -45,24 +45,23 @@ PVOID VulnurableDriver::HelperFunctions::FindPatternInKernelModule(HANDLE* Devic
 		printf("[-] Cannot find pattern in kernel module, search length (%llu) > 1GB\n", SearchLength);
 		return NULL;
 	}
-	KernelData = VirtualAlloc(NULL, SearchLength, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+	KernelData = malloc(SearchLength);
 	if (KernelData == NULL) {
 		printf("[-] Cannot allocate memory for kernel data, size = %llu bytes\n", SearchLength);
 		return NULL;
 	}
 	if (!VulnurableDriver::IoctlFunctions::MemoryRead(DeviceHandle, SearchAddress, KernelData, SearchLength)) {
 		printf("[-] Failed to read kernel data to find pattern in, address = %p, size = %llu bytes\n", SearchAddress, SearchLength);
-		VirtualFree(KernelData, 0, MEM_RELEASE);
+		free(KernelData);
 		return NULL;
 	}
 	PatternInKernelData = specific::FindPattern(KernelData, SearchLength, CompareAgainst, SearchMask);
 	if (PatternInKernelData == NULL) {
 		printf("[-] Failed to find pattern in kernel data, search size = %llu bytes, mask = %s, search address = %p\n", SearchLength, SearchMask, KernelData);
-		VirtualFree(KernelData, 0, MEM_RELEASE);
+		free(KernelData);
 		return NULL;
 	}
 	PatternAddress = (PVOID)((ULONG64)SearchAddress - (ULONG64)KernelData + (ULONG64)PatternInKernelData);  // Actual address = actual base - relative base + relative offset address
-	VirtualFree(KernelData, 0, MEM_RELEASE);
 	return PatternAddress;
 }
 

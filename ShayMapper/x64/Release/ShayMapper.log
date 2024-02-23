@@ -6,5 +6,8 @@
   unsigned_load.cpp
   utils.cpp
   vulndriver.cpp
-persistence.obj : error LNK2001: unresolved external symbol NtQuerySystemInformation
-H:\current\ShayMapper\x64\Release\ShayMapper.exe : fatal error LNK1120: 1 unresolved externals
+  Generating code
+  Previous IPDB not found, fall back to full compilation.
+  All 232 functions were compiled because no usable IPDB/IOBJ from previous compilation was found.
+  Finished generating code
+  ShayMapper.vcxproj -> H:\current\ShayMapper\x64\Release\ShayMapper.exe

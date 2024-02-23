@@ -1,0 +1,8 @@
+H:\current\ShayMapper\helpers.cpp;H:\current\ShayMapper\x64\Release\helpers.obj
+H:\current\ShayMapper\ioctl.cpp;H:\current\ShayMapper\x64\Release\ioctl.obj
+H:\current\ShayMapper\PE.cpp;H:\current\ShayMapper\x64\Release\PE.obj
+H:\current\ShayMapper\persistence.cpp;H:\current\ShayMapper\x64\Release\persistence.obj
+H:\current\ShayMapper\ShayMapper.cpp;H:\current\ShayMapper\x64\Release\ShayMapper.obj
+H:\current\ShayMapper\unsigned_load.cpp;H:\current\ShayMapper\x64\Release\unsigned_load.obj
+H:\current\ShayMapper\utils.cpp;H:\current\ShayMapper\x64\Release\utils.obj
+H:\current\ShayMapper\vulndriver.cpp;H:\current\ShayMapper\x64\Release\vulndriver.obj

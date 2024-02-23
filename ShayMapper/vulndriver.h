@@ -1,6 +1,4 @@
 #pragma once
-#include <Windows.h>
-#include <iostream>
 #include "additional_nt.h"
 
 namespace VulnurableDriver {
@@ -29,9 +27,9 @@ namespace VulnurableDriver {
 			LPCWSTR DriverName, LPCWSTR DriverFullPath);   // Hash bucket list holds information about a driver, iterate over it and delete entry like process DKOM
 		NTSTATUS CleanWdFilterDriverList(HANDLE* DeviceHandle, PVOID KernelBaseAddress, LPCWSTR DriverName,
 			PVOID* ActualDriversList, PVOID* ActualDriversCount, PVOID* ActualFreeDriverInfo);  // Clear the loaded driver list of wdfilter.sys
-		NTSTATUS CleanMmUnloadedDrivers(HANDLE* DeviceHandle, PVOID KernelBaseAddress, LPCWSTR DriverName);  // List of unloaded documented drivers
+		BOOL CleanMmUnloadedDrivers(HANDLE* DeviceHandle, PVOID KernelBaseAddress, LPCWSTR DriverName);  // List of unloaded documented drivers
 	}
-	NTSTATUS LoadVulnurableDriver(HANDLE* VulnHandle, LPCWSTR VulnDriverName, const char* SymbolicLink, const char* ServiceName, const BYTE DriverData[], ULONG DriverTimestamp, PVOID* MainKernelBase);
+	NTSTATUS LoadVulnurableDriver(HANDLE* VulnHandle, LPCWSTR VulnDriverName, const char* SymbolicLink, const char* ServiceName, const BYTE DriverData[], ULONG DriverTimestamp, PVOID* MainKernelBase, ULONG64 VulnSize);
 
 }
 

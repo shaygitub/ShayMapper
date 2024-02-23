@@ -1,0 +1,3 @@
+D:\current\ShayMapper\x64\Release\ShayMapper.exe
+F:\current\ShayMapper\x64\Release\ShayMapper.exe
+H:\current\ShayMapper\x64\Release\ShayMapper.exe

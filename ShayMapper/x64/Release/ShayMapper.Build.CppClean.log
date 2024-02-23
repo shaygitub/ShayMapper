@@ -7,9 +7,15 @@ h:\current\shaymapper\x64\release\persistence.obj
 h:\current\shaymapper\x64\release\pe.obj
 h:\current\shaymapper\x64\release\ioctl.obj
 h:\current\shaymapper\x64\release\helpers.obj
+h:\current\shaymapper\x64\release\shaymapper.exe
+h:\current\shaymapper\x64\release\shaymapper.pdb
+h:\current\shaymapper\x64\release\shaymapper.ipdb
+h:\current\shaymapper\x64\release\shaymapper.iobj
 h:\current\shaymapper\x64\release\shaymapper.tlog\cl.command.1.tlog
+h:\current\shaymapper\x64\release\shaymapper.tlog\cl.items.tlog
 h:\current\shaymapper\x64\release\shaymapper.tlog\cl.read.1.tlog
 h:\current\shaymapper\x64\release\shaymapper.tlog\cl.write.1.tlog
 h:\current\shaymapper\x64\release\shaymapper.tlog\link.command.1.tlog
 h:\current\shaymapper\x64\release\shaymapper.tlog\link.read.1.tlog
 h:\current\shaymapper\x64\release\shaymapper.tlog\link.write.1.tlog
+h:\current\shaymapper\x64\release\shaymapper.tlog\link.write.2u.tlog

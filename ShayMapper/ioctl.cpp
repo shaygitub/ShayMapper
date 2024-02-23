@@ -46,7 +46,7 @@ typedef struct _UNMAPIOSPACE_BUFFER{
 
 
 BOOL VulnurableDriver::IoctlFunctions::MemoryCopy(HANDLE* DeviceHandle, PVOID DestinationAddress, PVOID SourceAddress, ULONG64 CopySize) {
-	if (DeviceHandle == NULL || *DeviceHandle == NULL || *DeviceHandle == INVALID_HANDLE_VALUE || DestinationAddress == NULL || SourceAddress == NULL || CopySize == NULL) {
+	if (DeviceHandle == NULL || *DeviceHandle == INVALID_HANDLE_VALUE || DestinationAddress == NULL || SourceAddress == NULL || CopySize == NULL) {
 		return FALSE;
 	}
 	COPYMEMORY_BUFFER InputBuffer = { 0 };
@@ -60,7 +60,7 @@ BOOL VulnurableDriver::IoctlFunctions::MemoryCopy(HANDLE* DeviceHandle, PVOID De
 
 
 BOOL VulnurableDriver::IoctlFunctions::MemoryFill(HANDLE* DeviceHandle, PVOID FillAddress, ULONG FillValue, ULONG64 FillSize) {
-	if (DeviceHandle == NULL || *DeviceHandle == NULL || *DeviceHandle == INVALID_HANDLE_VALUE || FillAddress == NULL || FillSize == 0) {
+	if (DeviceHandle == NULL || *DeviceHandle == INVALID_HANDLE_VALUE || FillAddress == NULL || FillSize == 0) {
 		return FALSE;
 	}
 	FILLMEMORY_BUFFER InputBuffer = { 0 };
@@ -78,7 +78,7 @@ BOOL VulnurableDriver::IoctlFunctions::MemoryWrite(HANDLE* DeviceHandle, PVOID W
 }
 
 
-BOOL VulnurableDriver::IoctlFunctions::MemoryRead(HANDLE * DeviceHandle, PVOID ReadFromAddress, PVOID ReadIntoAddress, ULONG64 ReadSize){
+BOOL VulnurableDriver::IoctlFunctions::MemoryRead(HANDLE* DeviceHandle, PVOID ReadFromAddress, PVOID ReadIntoAddress, ULONG64 ReadSize){
 	return MemoryCopy(DeviceHandle, ReadIntoAddress, ReadFromAddress, ReadSize);
 }
 
@@ -101,7 +101,7 @@ BOOL VulnurableDriver::IoctlFunctions::VirtualToPhysical(HANDLE* DeviceHandle, P
 
 
 PVOID VulnurableDriver::IoctlFunctions::MapIoSpace(HANDLE* DeviceHandle, PVOID PhysicalAddress, ULONG MappingSize) {
-	if (DeviceHandle == NULL || *DeviceHandle == NULL || *DeviceHandle == INVALID_HANDLE_VALUE || PhysicalAddress == NULL || MappingSize == 0) {
+	if (DeviceHandle == NULL || *DeviceHandle == INVALID_HANDLE_VALUE || PhysicalAddress == NULL || MappingSize == 0) {
 		return FALSE;
 	}
 	MAPIOSPACE_BUFFER InputBuffer = { 0 };
@@ -119,7 +119,7 @@ PVOID VulnurableDriver::IoctlFunctions::MapIoSpace(HANDLE* DeviceHandle, PVOID P
 
 
 BOOL VulnurableDriver::IoctlFunctions::UnmapIoSpace(HANDLE* DeviceHandle, PVOID MappingAddress, ULONG MappingSize) {
-	if (DeviceHandle == NULL || *DeviceHandle == NULL || *DeviceHandle == INVALID_HANDLE_VALUE || MappingAddress == NULL || MappingSize == 0) {
+	if (DeviceHandle == NULL || *DeviceHandle == INVALID_HANDLE_VALUE || MappingAddress == NULL || MappingSize == 0) {
 		return FALSE;
 	}
 	UNMAPIOSPACE_BUFFER InputBuffer = { 0 };

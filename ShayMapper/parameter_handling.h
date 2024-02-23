@@ -9,7 +9,7 @@
 BOOL ValidateParameters(int argc, char* argv[], ULONG* PoolType) {
 	char DriverExtension[5] = { 0 };
 	struct stat CheckExists = { 0 };
-	if (argc < 2 || argc > 3) {
+	if (argc != 2 && argc != 3) {
 		printf("[-] USAGE: ShayMapper.exe [path to driver] [(optional) -Ind/-Reg/-Mdl]\n");
 		return FALSE;
 	}
