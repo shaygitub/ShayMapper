@@ -1,8 +1,10 @@
 # ShayMapper
-ShayMapper is a major part of my windows rootkit project that is used to map my main KMDF driver stealthly and can be used to map other drivers.
+ShayMapper is an addition above the kdmapper project to make it alot easier to integrate different vulnerable drivers for the end
+result of loading an unsigned driver into the memory. if the specific needed operations (i.e IOCTL-controlled memory copy) are not implemented
+by any additional driver, they will be implemented automatically by the regular intel driver as it implements all operations.
 
-Inspirations and helpful content:
-kdmapper - used the general business logic of kdmapper for this project with some changes by my specific needs (i.e creating the vulnurable driver file in relative path of running)
-LOLdrivers - i wanted to "add some flavor" to the vulnurable drivers exploitation used for loading the driver in kdmapper and this repository really helped in the process
-
-P.S: mapping drivers with this mapper (like kdmapper) will get you PASSIVE_LEVEL IRQL, so if you need to get higher IRQL - make sure you use the WINAPI functions 
+to add a new driver for the loading process you will need to do the following:
+1) create the needed IOCTL trigger functions by the needed format for each operation in TriggerOperations
+2) Implement a Load() function that will register all needed trigger functions, create a file for the driver (either from memory buffer
+   or in another way) and get a handle to the file that will be returned
+3) add the handle to the array of running drivers, increment the count of running drivers and add the running driver index for each implemented operation
