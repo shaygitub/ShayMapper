@@ -1,0 +1,13 @@
+﻿  driver_mapper.cpp
+  intel_driver.cpp
+  main.cpp
+  kdmapper.cpp
+  portable_executable.cpp
+  service.cpp
+  stealth_driver.cpp
+  utils.cpp
+  Generating code
+  Previous IPDB not found, fall back to full compilation.
+  All 801 functions were compiled because no usable IPDB/IOBJ from previous compilation was found.
+  Finished generating code
+  kdmapper.vcxproj -> C:\Users\shayg\Downloads\kdmapper-master\kdmapper-master\x64\Release\kdmapper_Release.exe
